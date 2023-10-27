@@ -1,0 +1,163 @@
+#include <linux/kernel.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
+
+DEFINE_SPINLOCK(mutex);
+DEFINE_SPINLOCK(doctor_mutex);
+DEFINE_SPINLOCK(patient_mutex);
+
+#define MAX_DOCTORS 10
+#define MAX_PATIENTS 20
+
+int num_doctors = 0;
+int num_patients = 0;
+int num_waiting_patients = 0;
+
+struct doctor_info {
+    long id;
+    const char* status;
+};
+
+struct patient_info {
+    long id;
+    const char* status;
+};
+
+int doctor(void* data) {
+    struct doctor_info* doctor_info = (struct doctor_info*)data;
+
+    spin_lock(&doctor_mutex);
+    num_doctors++;
+    spin_unlock(&doctor_mutex);
+
+    while (!kthread_should_stop()) {
+        //Check if there are waiting patients
+        spin_lock(&patient_mutex);
+
+        if (num_waiting_patients > 0) {
+            num_waiting_patients--;
+            spin_unlock(&patient_mutex);
+
+            // Treat the patient
+            printk("Doctor %ld is treating a patient.\n", doctor_info->id);
+            msleep(2000); // Simulate treatment time
+
+            spin_lock(&patient_mutex);
+            num_patients--;
+            spin_unlock(&patient_mutex);
+        } else {
+            spin_unlock(&patient_mutex);
+
+            // Doctor simulates rest time
+            printk("Doctor %ld is resting.\n", doctor_info->id);
+            msleep(5000);
+           }
+        }
+            spin_lock(&doctor_mutex);
+            num_doctors--;
+            spin_unlock(&doctor_mutex);
+            return 0;
+}
+
+int patient(void* data) {
+    struct patient_info* patient_info = (struct patient_info*)data;
+
+    spin_lock(&patient_mutex);
+    num_patients++;
+    num_waiting_patients++;
+    spin_unlock(&patient_mutex);
+
+    // Wait for a doctor
+    while (true) {
+        spin_lock(&doctor_mutex);
+
+        if (num_doctors > 0) {
+            spin_unlock(&doctor_mutex);
+            break;
+        } 
+            spin_unlock(&doctor_mutex);
+            msleep(1000); // Wait for a doctor to become available
+        }
+    
+
+    // Patient is in the waiting area
+    patient_info->status = "waiting for operation";
+    printk("Patient %ld is %s.\n", patient_info->id, patient_info->status);
+    msleep(1000);
+
+    // Patient is ready for the operation
+    patient_info->status = "ready for operation";
+    printk("Patient %ld is %s.\n", patient_info->id, patient_info->status);
+    msleep(1000);
+
+    // Patient has gone to the ultrasound room
+    patient_info->status = "in the ultrasound room";
+    printk("Patient %ld is %s.\n", patient_info->id, patient_info->status);
+    msleep(2000);
+
+    // Patient is back in the waiting area
+    patient_info->status = "back in the waiting area";
+    printk("Patient %ld is %s.\n", patient_info->id, patient_info->status);
+    msleep(1000);
+
+    // Patient is having food at the cafe
+    patient_info->status = "having food at the cafe";
+    printk("Patient %ld is %s.\n", patient_info->id, patient_info->status);
+    msleep(3000);
+
+    // Patient has gone to the general practitioner
+    msleep(2000);
+
+    // Patient has completed the visit
+    spin_lock(&patient_mutex);
+    num_patients--;
+    spin_unlock(&patient_mutex);
+
+    return 0;
+}
+
+asmlinkage long sys_hospital(void) {
+    int i;
+
+    int num_doctors = 3;
+    int num_patients = 10;
+
+    struct task_struct* doctors[MAX_DOCTORS];
+    struct task_struct* patients[MAX_PATIENTS];
+    struct doctor_info doctor_info[MAX_DOCTORS];
+    struct patient_info patient_info[MAX_PATIENTS];
+
+    // Create doctor threads
+    for (i = 0; i < num_doctors; i++) {
+        doctor_info[i].id = i + 1;
+        doctors[i] = kthread_create(doctor, &doctor_info[i], "doctor");
+        if (doctors[i]) {
+            wake_up_process(doctors[i]);
+        } else {
+            kthread_stop(doctors[i]);
+        }
+    }
+
+    // Create patient threads
+    for (i = 0; i < num_patients; i++) {
+        patient_info[i].id = i + 1;
+        patients[i] = kthread_create(patient, &patient_info[i], "patient");
+        if (patients[i]) {
+            wake_up_process(patients[i]);
+        } else {
+            kthread_stop(patients[i]);
+        }
+    }
+
+    // Wait for all patient threads to finish
+    for (i = 0; i < num_patients; i++) {
+        kthread_stop(patients[i]);
+    }
+
+    // Stop doctor threads
+    for (i = 0; i < num_doctors; i++) {
+        kthread_stop(doctors[i]);
+    }
+
+    return 0;
+}
